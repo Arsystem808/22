@@ -38,61 +38,52 @@ def pivots(df: pd.DataFrame) -> pd.DataFrame:
     S2 = P - (h1 - l1)
     out = pd.DataFrame({"pivot":P, "r1":R1, "s1":S1, "r2":R2, "s2":S2})
     return out
-
 def build_levels(df: pd.DataFrame) -> dict:
-    if df.empty or len(df) < 16:
-        raise RuntimeError("Недостаточно данных для расчёта уровней")
+    if df.empty:
+        raise RuntimeError("Нет данных")
     df = df.copy()
-    df["ATR14"] = atr(df, 14)
-    piv = pivots(df)
-    df = pd.concat([df, piv], axis=1)
-    latest = df.iloc[-1]
 
+    # Динамическое окно ATR: берём то, что есть (не меньше 5)
+    win = max(5, min(14, len(df) - 1))
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev_close = close.shift(1)
+    tr = np.maximum(high - low, np.maximum((high - prev_close).abs(), (low - prev_close).abs()))
+    df["ATR14"] = tr.rolling(win).mean().fillna(tr.ewm(span=win, adjust=False).mean())
+
+    # Пивоты считаем из предыдущего бара; если ряд короткий — fallback на последние значения
+    h1, l1, c1 = high.shift(1), low.shift(1), close.shift(1)
+    P = ((h1 + l1 + c1) / 3.0).fillna(close.rolling(min_periods=1, window=win).mean())
+    R1 = (2*P - l1).fillna(P + (high - low).rolling(win).mean())
+    S1 = (2*P - h1).fillna(P - (high - low).rolling(win).mean())
+    df["pivot"], df["r1"], df["s1"] = P, R1, S1
+
+    latest = df.iloc[-1]
     px = float(latest["Close"])
-    a = float(latest["ATR14"])
-    P = float(latest["pivot"])
+    a  = float(latest["ATR14"])
+    P  = float(latest["pivot"])
     R1 = float(latest["r1"])
     S1 = float(latest["s1"])
 
-    score = 0.5
-    if a and a > 0:
-        score = max(0.0, min(1.0, 0.5 + (px - P) / (2.5 * a)))
+    score = 0.5 if a <= 0 else max(0.0, min(1.0, 0.5 + (px - P)/(2.5*a)))
     action = "BUY" if score >= 0.6 else ("SHORT" if score <= 0.4 else "WAIT")
 
     if action == "BUY":
-        entry = px
-        tp1 = max(px + 0.6*a, R1)
-        tp2 = max(px + 1.2*a, P + (R1 - P)*1.5)
-        sl  = px - 1.0*a
-        rationale = "Цена выше pivot, волатильность умеренная — приоритет на покупку к R1."
+        entry, tp1, tp2, sl = px, max(px+0.6*a, R1), max(px+1.2*a, P+(R1-P)*1.5), px-1.0*a
+        rationale = "Цена ≥ pivot; волатильность достаточна — приоритет BUY к R1."
     elif action == "SHORT":
-        entry = px
-        tp1 = min(px - 0.6*a, S1)
-        tp2 = min(px - 1.2*a, P - (P - S1)*1.5)
-        sl  = px + 1.0*a
-        rationale = "Цена ниже pivot, признаки ослабления спроса — приоритет на шорт к S1."
+        entry, tp1, tp2, sl = px, min(px-0.6*a, S1), min(px-1.2*a, P-(P-S1)*1.5), px+1.0*a
+        rationale = "Цена ≤ pivot; спрос слабее — приоритет SHORT к S1."
     else:
-        entry = px
-        tp1 = px + 0.8*a
-        tp2 = px + 1.6*a
-        sl  = px - 0.8*a
-        rationale = "Сигнал неоднозначен: дождаться выхода из диапазона вокруг pivot."
+        entry, tp1, tp2, sl = px, px+0.8*a, px+1.6*a, px-0.8*a
+        rationale = "Сигнал нейтральный — дождаться выхода из диапазона."
 
     return {
-        "price": round(px,2),
-        "atr": round(a,2),
-        "pivot": round(P,2),
-        "r1": round(R1,2),
-        "s1": round(S1,2),
-        "action": action,
-        "entry": round(entry,2),
-        "tp1": round(tp1,2),
-        "tp2": round(tp2,2),
-        "sl": round(sl,2),
-        "confidence": round(float(score),2),
-        "rationale": rationale
+        "price": round(px,2), "atr": round(a,2), "pivot": round(P,2),
+        "r1": round(R1,2), "s1": round(S1,2),
+        "action": action, "entry": round(entry,2),
+        "tp1": round(tp1,2), "tp2": round(tp2,2), "sl": round(sl,2),
+        "confidence": round(float(score),2), "rationale": rationale
     }
-
 def get_cfg():
     env = os.getenv("TICKERS", "AAPL,MSFT,NVDA")
     return [t.strip().upper() for t in env.split(",") if t.strip()]
